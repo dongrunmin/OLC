@@ -1,0 +1,5 @@
+Nigeria:
+    basedir: "Your_path/pkl"
+    paths_train: "Your_path/csv/seg_train.csv"
+    paths_eval: "Your_path/csv/seg_val.csv"
+
