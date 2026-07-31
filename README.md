@@ -1,7 +1,6 @@
-## The Hidden Cost of Stolen Oil: Measuring the Scale of Illegal Oil-induced Land Contamination
+## Substantial health toll of oil-induced land contamination: Evidence from satellite observations and causal inference
 
-
-Abstract: Oil theft and illegal artisanal refining pose significant threats to environmental health, energy security, and regional stability, hindering progress toward the United Nations Sustainable Development Goals in oil-rich regions. However, the clandestine nature of these activities and the difficulty in distinguishing their environmental impacts from those of legal oil operations have obscured their spatiotemporal patterns and ecological consequences. To address this gap, we proposed a novel detection framework for illegal oil-induced land contamination (IOLC), leveraging its persistent and cumulative characteristics as an objective indicator for large-scale, long-term analysis. By integrating high-resolution, time-series, and multi-spectral satellite imagery with our developed deep learning model, we systematically mapped IOLC areas across Nigeria from 2016 to 2023. Our results show that illegal oil operations directly degraded over 470 km² of mangrove ecosystems and 63 km² of forests, affecting ~1.63 million people. Correlational analysis further revealed that these activities are closely tied to fluctuations in global crude oil prices and domestic conflict events. This study provides the first high-resolution, quantitative assessment of illegal oil-induced environmental degradation, offering actionable insights for evidence-based policymaking and intervention in vulnerable regions and beyond.
+Abstract: Oil-induced land contamination (OLC) causes severe environmental degradation and pose substantial hazards to child health. We study how OLC affects pediatric health by combining a novel, satellite-derived deep-learning inventory of OLC in Nigeria (2016–2023) with geocoded Demographic and Health Surveys. This study first uncovers the spatiotemporal patterns of this widespread pollution, demonstrating that official oil spill records capture only a marginal fraction of the true contamination extent, leaving approximately 96% to 99% of the annual satellite-derived OLC areas entirely unrecorded. Environmentally, OLC degraded over 476.79 km² of mangroves, exposing ~1.63 million people. To identify the causal mechanisms underlying these pediatric health impacts, we introduce a river network model comparing downstream communities exposed to waterborne pollution with unexposed upstream controls. We find that OLC significantly increases the risk of acute diarrhea and infant mortality downstream. Crucially, our results show that these impacts are driven by waterborne transmission and exacerbated by lacking clean water infrastructure, rather than a simple proximity effect. Furthermore, OLC-driven premature mortality introduces a survivor bias that can obscure hematological damage in surviving children. These findings suggest that risk assessments relying solely on spatial distance may underestimate actual environmental health threats if baseline infrastructure and mortality selection are not adequately considered. Interventions should prioritize targeted clean water provisions alongside dynamic hydrology-based public health geofencing. Ultimately, our framework offers an objective, satellite-based tool for policymakers to monitor environmental injustice and evaluate the efficacy of regulatory interventions.
 
 
 ## Setup
@@ -13,10 +12,10 @@ Abstract: Oil theft and illegal artisanal refining pose significant threats to e
 
 
 ```bash
-git clone https://github.com/dongrunmin/IOLC.git
-cd IOLC
+git clone https://github.com/dongrunmin/OLC.git
+cd OLC
 conda env create -f environment.yml
-conda activate IOLC
+conda activate OLC
 ```
 
 ### Install casual-conv1d
@@ -37,7 +36,7 @@ python setup.py install
 
 ### Dataset
 
-We introduce an illegal oil-induced land contamination (IOLC) dataset for STMamba training and test. This dataset is available for download via [google drive](https://drive.google.com/file/d/1zkI9CUEV3QXiryNI3oZpND16SzKZlejC/view?usp=drive_link).
+We introduce an oil-induced land contamination (OLC) dataset for STMamba training and test. This dataset is available for download via [google drive](https://drive.google.com/file/d/1zkI9CUEV3QXiryNI3oZpND16SzKZlejC/view?usp=drive_link).
 
 The satellite imagery is sourced from the NICFI Satellite Data Program, which provides free high-resolution satellite data for tropical regions to facilitate the sustainable development of developing countries. According to the availability and quality of the images, we used Planet Surface Reflectance data from the dry season of each year, primarily focusing on December. Each image has four spectral bands (i.e., red, green, blue, and near-infrared) with a resolution of 4.77 meters. 
 
@@ -99,17 +98,9 @@ Then, run command:
 
 
 
-## IOLC maps
+## OLC maps
 
-We provide generated mapping results in shapefile format for Nigeria (2016-2023):
-
-```angular2html
-mapping_results/shp_2016-2023/
-│── 2016/
-│── 2017/
-│── ...
-└── 2023/
-```
+We provide generated mapping results in shapefile format for Nigeria (2016-2023): https://doi.org/10.5281/zenodo.21718340.
 
 
 ## Acknowledgements
