@@ -100,7 +100,7 @@ Then, run command:
 
 ## OLC maps
 
-We provide generated mapping results in shapefile format for Nigeria (2016-2023): https://doi.org/10.5281/zenodo.21718340.
+We provide generated mapping results in shapefile format for Nigeria (2016-2023): https://doi.org/10.5281/zenodo.23106560.
 
 ## Health-model reproduction
 
