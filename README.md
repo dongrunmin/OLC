@@ -1,6 +1,6 @@
 ## Substantial health toll of oil-induced land contamination: Evidence from satellite observations and causal inference
 
-Abstract: Oil-induced land contamination (OLC) causes severe environmental degradation and pose substantial hazards to child health. We study how OLC affects pediatric health by combining a novel, satellite-derived deep-learning inventory of OLC in Nigeria (2016–2023) with geocoded Demographic and Health Surveys. This study first uncovers the spatiotemporal patterns of this widespread pollution, demonstrating that official oil spill records capture only a marginal fraction of the true contamination extent, leaving approximately 96% to 99% of the annual satellite-derived OLC areas entirely unrecorded. Environmentally, OLC degraded over 476.79 km² of mangroves, exposing ~1.63 million people. To identify the causal mechanisms underlying these pediatric health impacts, we introduce a river network model comparing downstream communities exposed to waterborne pollution with unexposed upstream controls. We find that OLC significantly increases the risk of acute diarrhea and infant mortality downstream. Crucially, our results show that these impacts are driven by waterborne transmission and exacerbated by lacking clean water infrastructure, rather than a simple proximity effect. Furthermore, OLC-driven premature mortality introduces a survivor bias that can obscure hematological damage in surviving children. These findings suggest that risk assessments relying solely on spatial distance may underestimate actual environmental health threats if baseline infrastructure and mortality selection are not adequately considered. Interventions should prioritize targeted clean water provisions alongside dynamic hydrology-based public health geofencing. Ultimately, our framework offers an objective, satellite-based tool for policymakers to monitor environmental injustice and evaluate the efficacy of regulatory interventions.
+Abstract: Oil-induced land contamination (OLC) causes severe environmental degradation and poses substantial hazards to child health. We study how OLC affects pediatric health by combining a novel, satellite-derived deep-learning inventory of OLC in Nigeria (2016–2023) with geocoded Demographic and Health Surveys. This study first uncovers the spatiotemporal patterns of this widespread pollution, demonstrating that official oil spill records capture only a marginal fraction of the true contamination extent, leaving approximately 96% to 99% of the annual satellite-derived OLC areas entirely unrecorded. Environmentally, OLC degraded over 476.79 km² of mangroves, exposing ~1.63 million people. To assess the health burden associated with waterborne pollution, we introduce a river network model comparing downstream communities with upstream communities. We find that OLC significantly increases the risk of acute diarrhea and infant mortality downstream. Crucially, our results show that these impacts are driven by waterborne transmission and exacerbated by lacking clean water infrastructure, rather than a simple proximity effect. Furthermore, OLC-driven premature mortality introduces a survivor bias that can obscure hematological damage in surviving children. These findings suggest that risk assessments relying solely on spatial distance may underestimate actual environmental health threats if baseline infrastructure and mortality selection are not adequately considered. Interventions should prioritize targeted clean water provisions alongside dynamic hydrology-based public health measures. Our framework offers an objective, satellite-based tool for policymakers to monitor environmental injustice and evaluate the efficacy of regulatory interventions.
 
 
 ## Setup
@@ -102,9 +102,40 @@ Then, run command:
 
 We provide generated mapping results in shapefile format for Nigeria (2016-2023): https://doi.org/10.5281/zenodo.21718340.
 
+## Health-model reproduction
+
+The scripts in `Health_script/` perform regression analysis **after DHS records have been processed and linked to OLC, river-network, and household features**. They use one combined model-ready CSV. DHS extraction, satellite segmentation, and spatial feature generation are upstream steps and are not performed by these scripts.
+
+### Input and environment
+
+Place `all_living_and_deceased_model_ready.csv` in `data/health/`. The updated file has 7,162 records and 82 columns. Its variable definitions and sample rules are documented in `data/health/HEALTH_DATA_DICTIONARY.md`.
+
+The health models require Python 3.11 or later and NumPy, pandas, SciPy, statsmodels, and scikit-learn. PyTorch, Mamba, CUDA, and satellite images are not required to run this stage. Tested dependency versions are pinned in `Health_script/requirements.txt`.
+
+From the repository root:
+
+```bash
+python -m pip install -r Health_script/requirements.txt
+python Health_script/run_health_models.py
+```
+
+To use another location for the complete CSV or results:
+
+```bash
+python Health_script/run_health_models.py --data /path/to/all_living_and_deceased_model_ready.csv --output-dir /path/to/results
+```
+
+The default paths are resolved from the scripts, so execution does not depend on the working directory. Each analysis can also be run separately with the same `--data` and `--output-dir` options:
+
+```bash
+python Health_script/01_strict_diarrhea.py
+python Health_script/02_expanded_diarrhea.py
+python Health_script/03_infant_mortality.py
+python Health_script/04_hemoglobin_survivors.py
+python Health_script/05_hemoglobin_with_deceased.py
+```
+
 
 ## Acknowledgements
 
 This implementation is based on [Vivim](https://github.com/scott-yjyang/Vivim.git). Thanks for their public codes.
-
-

@@ -1,383 +1,284 @@
+"""Shared model specifications for the OLC health analyses.
+
+Input is the combined feature-ready child CSV. Outcome-specific samples are
+constructed here. No DHS extraction or GIS feature generation is performed.
+"""
 from __future__ import annotations
 
-import warnings
+import argparse
 from pathlib import Path
-from typing import Iterable
-
 import numpy as np
 import pandas as pd
-import statsmodels.api as sm
 import statsmodels.formula.api as smf
-
+from sklearn.decomposition import PCA
+from sklearn.impute import SimpleImputer
 
 ROOT = Path(__file__).resolve().parents[1]
-DATA = ROOT / "data"
+DATA = ROOT / "data" / "health"
 OUT = ROOT / "Health" / "outputs"
-OUT.mkdir(exist_ok=True)
-
-RIVER_SCALES_KM = [1, 2, 3, 5, 10, 15]
-BUFFER_RADII_KM = [1, 5, 10, 15]
-
-RENAME_MAP = {
-    "weight_child": "sample_weight",
-    "water_source": "water_source_code",
-    "water_improved_binary": "water_improved",
-    "cooking_fuel": "cooking_fuel_code",
-    "mosquito_nets_owned": "mosquito_nets",
-    "olc_dist": "olc_dist_m",
-    "olc1km": "olc_count_1km",
-    "olc5km": "olc_count_5km",
-    "olc10km": "olc_count_10km",
-    "olc15km": "olc_count_15km",
-    "olc1km_avg": "olc_sustained_1km",
-    "olc5km_avg": "olc_sustained_5km",
-    "olc10km_avg": "olc_sustained_10km",
-    "olc15km_avg": "olc_sustained_15km",
-    "typ_1km": "river_type_1km",
-    "typ_2km": "river_type_2km",
-    "typ_3km": "river_type_3km",
-    "typ_5km": "river_type_5km",
-    "typ_10km": "river_type_10km",
-    "typ_15km": "river_type_15km",
-    "grid05_id": "grid_id_05",
-    "grid01_id": "grid_id_01",
+RIVER_SCALES_KM = (1, 2, 3, 5, 10, 15)
+EXPOSURE_SCALES_KM = (5, 10, 15)
+RIPARIAN_SCALES_KM = (3, 5, 10, 15)
+ALIASES = {
+    "weight_child": "sample_weight", "water_source": "water_source_code",
+    "water_improved_binary": "water_improved", "cooking_fuel": "cooking_fuel_code",
+    "mosquito_nets_owned": "mosquito_nets", "intervie_1": "interview_year",
+    "grid05_id": "grid_id_05", "calc_age_months": "child_age_months",
+    **{f"typ_{k}km": f"river_type_{k}km" for k in RIVER_SCALES_KM},
 }
+RESULT_COLUMNS = [
+    "model", "outcome", "scale_km", "exposure", "weighted", "include_water",
+    "include_wealth", "term", "coef", "std_error", "p_value", "stars",
+    "n_obs", "n_upstream", "n_downstream",
+]
 
 
-def stars(p_value: float) -> str:
-    if pd.isna(p_value):
-        return ""
-    if p_value < 0.01:
-        return "***"
-    if p_value < 0.05:
-        return "**"
-    if p_value < 0.10:
-        return "*"
-    return ""
+def stars(p):
+    return "***" if p < .01 else "**" if p < .05 else "*" if p < .1 else ""
 
 
-def material_quality(code: object) -> float:
-    try:
-        value = int(code)
-    except Exception:
+def _quality(value):
+    if pd.isna(value):
         return np.nan
-    if 10 <= value < 20:
-        return 1.0
-    if 20 <= value < 30:
-        return 2.0
-    if 30 <= value < 40:
-        return 3.0
-    return np.nan
+    code = float(value)
+    return 1.0 if 10 <= code < 20 else 2.0 if 20 <= code < 30 else 3.0 if 30 <= code < 40 else np.nan
 
 
-def first_principal_component(frame: pd.DataFrame) -> np.ndarray:
-    filled = frame.copy()
-    for col in filled.columns:
-        mode = filled[col].dropna().mode()
-        fallback = float(mode.iloc[0]) if not mode.empty else 0.0
-        filled[col] = filled[col].fillna(fallback)
-    values = filled.values.astype(float)
-    centered = values - values.mean(axis=0, keepdims=True)
-    # Match the original analysis scripts: sklearn PCA centers variables but does
-    # not standardize them before extracting the first housing-quality component.
-    _, _, right_vectors = np.linalg.svd(centered, full_matrices=False)
-    return centered @ right_vectors[0]
-
-
-def prepare_model_data(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy().rename(columns=RENAME_MAP)
-    if "calc_age_months" in out.columns:
-        out["child_age_months"] = pd.to_numeric(out["calc_age_months"], errors="coerce")
-
-    numeric_cols = [
-        "diarrhea_binary",
-        "hb_level",
-        "water_improved",
-        "clean_fuel",
-        "mosquito_nets",
-        "is_wet_season",
-        "child_age_months",
-        "child_sex",
-        "head_sex",
-        "mother_edu",
-        "wealth_index",
-        "toilet_type",
-        "interview_year",
-        "grid_id_05",
-        "is_dead",
-    ]
-    for km in BUFFER_RADII_KM:
-        numeric_cols.extend([f"olc_count_{km}km", f"olc_sustained_{km}km"])
-    for km in RIVER_SCALES_KM:
-        numeric_cols.append(f"river_type_{km}km")
-    for col in numeric_cols:
-        if col in out.columns:
-            out[col] = pd.to_numeric(out[col], errors="coerce")
-
-    out["child_female"] = (out.get("child_sex") == 2).astype(int)
-    out["head_female"] = (out.get("head_sex") == 2).astype(int)
-    if "clean_fuel" in out.columns:
-        out["clean_fuel"] = out["clean_fuel"].fillna(-1)
-
-    for col in ["floor_material", "wall_material", "roof_material"]:
-        if col not in out.columns:
-            out[col] = np.nan
-    quality = pd.DataFrame(
-        {
-            "floor_quality": out["floor_material"].apply(material_quality),
-            "wall_quality": out["wall_material"].apply(material_quality),
-            "roof_quality": out["roof_material"].apply(material_quality),
-        }
-    )
-    out["housing_quality_index"] = first_principal_component(quality)
-
-    for km in BUFFER_RADII_KM:
-        for exposure_type in ["count", "sustained"]:
-            col = f"olc_{exposure_type}_{km}km"
-            if col in out.columns and f"log_{col}" not in out.columns:
-                out[f"log_{col}"] = np.log1p(pd.to_numeric(out[col], errors="coerce"))
+def canonicalize(df):
+    """Coalesce partial aliases, checking that overlapping values agree."""
+    out = df.copy()
+    for alias, target in ALIASES.items():
+        if alias not in out:
+            continue
+        if target not in out:
+            out[target] = out[alias]
+        else:
+            both = out[alias].notna() & out[target].notna()
+            a = pd.to_numeric(out.loc[both, alias], errors="raise")
+            b = pd.to_numeric(out.loc[both, target], errors="raise")
+            if not np.allclose(a, b, rtol=0, atol=1e-10):
+                raise ValueError(f"Conflicting columns: {alias} and {target}")
+            out[target] = out[target].fillna(out[alias])
     return out
 
 
-def load_living() -> pd.DataFrame:
-    return prepare_model_data(pd.read_csv(DATA / "health" / "living_children_model_ready.csv"))
+def prepare(df, *, fill_missing_fuel=True):
+    """Construct controls and logs on the supplied analysis population.
+
+    Housing PCA is fitted on the population passed by the caller. Diarrhea
+    preparation uses living records. Both Hb analyses use the combined
+    population so their housing index has the same fitted basis. Mortality
+    also uses the combined population. Regression complete-case selection
+    follows this construction.
+    """
+    out = canonicalize(df)
+    cols = ["sample_weight", "child_age_months", "child_sex", "head_sex",
+            "mother_edu", "wealth_index", "water_improved", "clean_fuel",
+            "mosquito_nets", "is_wet_season", "toilet_type", "interview_year",
+            "grid_id_05", "is_dead", "diarrhea_binary", "hb_level"]
+    cols += [f"river_type_{k}km" for k in RIVER_SCALES_KM]
+    cols += [f"olc_{prefix}_km2_{k}km" for prefix in ("area", "mean_area") for k in EXPOSURE_SCALES_KM]
+    for col in cols:
+        if col in out:
+            out[col] = pd.to_numeric(out[col], errors="raise")
+    for source, target in (("child_sex", "child_female"), ("head_sex", "head_female")):
+        # Missing sex must remain missing, not become the male reference class.
+        out[target] = out[source].eq(2).astype(float).where(out[source].isin([1, 2]))
+    if fill_missing_fuel:
+        out["clean_fuel"] = out["clean_fuel"].fillna(-1)
+    q = pd.DataFrame({c: out[c].map(_quality) for c in ("floor_material", "wall_material", "roof_material")})
+    if not q.notna().any().all():
+        raise ValueError("Housing PCA requires an observed category in each material column")
+    out["housing_quality_index"] = PCA(n_components=1).fit_transform(
+        SimpleImputer(strategy="most_frequent").fit_transform(q))[:, 0]
+    for k in EXPOSURE_SCALES_KM:
+        for prefix in ("area", "mean_area"):
+            raw = f"olc_{prefix}_km2_{k}km"
+            target = f"log_olc_{prefix}_km2_{k}km"
+            if raw not in out:
+                continue
+            if (out[raw].dropna() < 0).any():
+                raise ValueError(f"Negative OLC area in {raw}")
+            derived = np.log1p(out[raw])
+            if target in out:
+                stored = pd.to_numeric(out[target], errors="raise")
+                both = stored.notna() & derived.notna()
+                if not np.allclose(stored[both], derived[both], rtol=1e-10, atol=1e-12):
+                    raise ValueError(f"{target} does not equal log1p({raw})")
+            out[target] = derived
+    return out
 
 
-def load_living_plus_deceased(deceased_hb_value: float = -20.0) -> pd.DataFrame:
-    living = pd.read_csv(DATA / "health" / "living_children_model_ready.csv")
-    deceased = pd.read_csv(DATA / "health" / "deceased_children_model_ready.csv")
-    living["is_dead"] = 0
-    deceased["is_dead"] = 1
-    deceased["hb_level"] = deceased_hb_value
-    combined = pd.concat([living, deceased], ignore_index=True, sort=False)
-    return prepare_model_data(combined)
+def _read(path=None):
+    path = Path(path) if path else DATA / "all_living_and_deceased_model_ready.csv"
+    df = pd.read_csv(path)
+    if not df["is_dead"].isin([0, 1]).all():
+        raise ValueError("is_dead must contain only 0 and 1")
+    return df
 
 
-def load_infant_mortality_risk_set() -> pd.DataFrame:
-    return prepare_model_data(pd.read_csv(DATA / "health" / "infant_mortality_model_ready.csv"))
+def load_living(path=None, *, diarrhea=False):
+    raw = _read(path)
+    # Both Hb panels use the housing PCA fitted on the same combined population.
+    # Only the regression sample is restricted to survivors for Panel A.
+    # Keep diarrhea's existing PCA population unchanged.
+    population = raw.loc[raw.is_dead.eq(0)].copy() if diarrhea else raw
+    out = prepare(population)
+    out = out.loc[out.is_dead.eq(0)].copy()
+    if diarrhea:
+        out = out.loc[out.interview_year.eq(2018)].copy()
+    return out
 
 
-def build_design_matrix(
-    data: pd.DataFrame,
-    outcome: str,
-    exposure: str,
-    include_water: bool,
-    include_wealth: bool,
-    group_col: str = "grid_id_05",
-) -> tuple[pd.Series, pd.DataFrame, pd.Series, pd.DataFrame]:
-    continuous = [
-        exposure,
-        "is_upstream",
-        "child_age_months",
-        "child_female",
-        "head_female",
-        "housing_quality_index",
-        "clean_fuel",
-        "mosquito_nets",
-        "is_wet_season",
-    ]
-    if include_water:
-        continuous.append("water_improved")
-
-    categorical = ["mother_edu", "interview_year", "grid_id_05", "toilet_type"]
-    if include_wealth:
-        categorical.insert(1, "wealth_index")
-    required = [outcome, group_col] + continuous + categorical
-    required = [col for col in required if col in data.columns]
-    used = data.dropna(subset=required).copy()
-    used[f"{exposure}:is_upstream"] = used[exposure] * used["is_upstream"]
-
-    x_parts = [used[continuous + [f"{exposure}:is_upstream"]].astype(float)]
-    for col in categorical:
-        if col in used.columns and used[col].nunique(dropna=True) > 1:
-            dummies = pd.get_dummies(used[col].astype("category"), prefix=col, drop_first=True)
-            x_parts.append(dummies.astype(float))
-    x = pd.concat(x_parts, axis=1)
-    x = sm.add_constant(x, has_constant="add")
-    y = used[outcome].astype(float)
-    groups = used[group_col]
-    return y, x, groups, used
+def load_combined(path=None, *, deceased_hb=0.0):
+    out = prepare(_read(path))
+    # This assignment is local to the sensitivity model. Do not modify source Hb.
+    out.loc[out.is_dead.eq(1), "hb_level"] = deceased_hb
+    return out
 
 
-def fit_clustered_ols(
-    data: pd.DataFrame,
-    outcome: str,
-    exposure: str,
-    include_water: bool,
-    include_wealth: bool,
-    group_col: str = "grid_id_05",
-):
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        y, x, groups, used = build_design_matrix(data, outcome, exposure, include_water, include_wealth, group_col=group_col)
-        if y.nunique(dropna=True) < 2:
-            raise ValueError("Outcome has no variation after formula-based missing-data handling.")
-        result = sm.OLS(y, x).fit(cov_type="cluster", cov_kwds={"groups": groups})
-        return result, used
+def load_infant_mortality(path=None):
+    out = prepare(_read(path))
+    # For a deceased child this is elapsed age from birth to interview, not b7.
+    return out.loc[out.child_age_months.ge(0) & out.child_age_months.lt(12)
+                   & out.interview_year.isin([2018, 2021])].copy()
 
 
-def control_formula(data: pd.DataFrame, include_water: bool, include_wealth: bool) -> str:
-    terms = [
-        "child_age_months",
-        "child_female",
-        "head_female",
-        "C(mother_edu)",
-    ]
-    if include_wealth:
-        terms.append("C(wealth_index)")
-    terms.append("housing_quality_index")
-    if include_water:
-        terms.append("water_improved")
-    terms.extend(["clean_fuel", "mosquito_nets", "is_wet_season", "C(interview_year)", "C(grid_id_05)"])
-    if "toilet_type" in data.columns and 1 < data["toilet_type"].nunique(dropna=True) < 20:
-        terms.append("C(toilet_type)")
-    return " + ".join(terms)
+def _formula(outcome, exposure, water, wealth):
+    controls = ["child_age_months", "child_female", "head_female", "C(mother_edu)"]
+    if wealth:
+        controls.append("C(wealth_index)")
+    controls.append("housing_quality_index")
+    if water:
+        controls.append("water_improved")
+    controls += ["clean_fuel", "mosquito_nets", "is_wet_season",
+                 "C(interview_year)", "C(grid_id_05)", "C(toilet_type)"]
+    return f"{outcome} ~ {exposure} * is_upstream + " + " + ".join(controls)
 
 
-def fit_clustered_ols_formula(
-    data: pd.DataFrame,
-    outcome: str,
-    exposure: str,
-    include_water: bool,
-    include_wealth: bool,
-    group_col: str = "grid_id_05",
-):
-    controls = control_formula(data, include_water=include_water, include_wealth=include_wealth)
-    formula = f"{outcome} ~ {exposure} * is_upstream + {controls}"
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        model = smf.ols(formula=formula, data=data)
-        row_idx = model.data.row_labels
-        used = data.loc[row_idx].copy()
-        groups = data.loc[row_idx, group_col]
-        if used[outcome].nunique(dropna=True) < 2:
-            raise ValueError("Outcome has no variation after formula-based missing-data handling.")
-        result = model.fit(cov_type="cluster", cov_kwds={"groups": groups})
-        return result, used
-
-
-def add_result_rows(rows: list[dict], result, metadata: dict, exposure: str, interaction: str) -> None:
-    used = metadata.pop("used_data")
-    n_up = int((used["is_upstream"] == 1).sum())
-    n_down = int((used["is_upstream"] == 0).sum())
-    terms = [
-        ("downstream_effect", exposure),
-        ("upstream_interaction", interaction),
-        ("upstream_main", "is_upstream"),
-    ]
-    for label, term in terms:
-        rows.append(
-            {
-                **metadata,
-                "term": label,
-                "raw_term": term,
-                "coef": float(result.params[term]),
-                "std_error": float(result.bse[term]),
-                "p_value": float(result.pvalues[term]),
-                "stars": stars(float(result.pvalues[term])),
-                "n_obs": int(result.nobs),
-                "n_upstream_control": n_up,
-                "n_downstream_exposed": n_down,
-                "r2": float(getattr(result, "rsquared", np.nan)),
-            }
-        )
-
-    contrast = np.zeros(len(result.params))
-    contrast[list(result.params.index).index(exposure)] = 1
-    contrast[list(result.params.index).index(interaction)] = 1
-    test = result.t_test(contrast)
-    p_value = float(test.pvalue.item())
-    rows.append(
-        {
-            **metadata,
-            "term": "net_upstream_effect",
-            "raw_term": f"{exposure} + {interaction}",
-            "coef": float(result.params[exposure] + result.params[interaction]),
-            "std_error": float(test.sd.item()),
-            "p_value": p_value,
-            "stars": stars(p_value),
-            "n_obs": int(result.nobs),
-            "n_upstream_control": n_up,
-            "n_downstream_exposed": n_down,
-            "r2": float(getattr(result, "rsquared", np.nan)),
-        }
-    )
-
-
-def run_river_interaction(
-    df: pd.DataFrame,
-    outcome: str,
-    exposure: str,
-    river_scales_km: Iterable[int],
-    include_water: bool,
-    river_grouping: str,
-    model_name: str,
-    include_wealth: bool = True,
-    use_formula: bool = False,
-) -> pd.DataFrame:
-    rows: list[dict] = []
+def run_river_interaction(df, outcome, exposure, river_scales_km, *,
+                          include_water, include_wealth=True, weighted=True,
+                          grouping="upstream_isolated_vs_mid_down", model_name="model"):
+    rows, audits = [], []
     for scale in river_scales_km:
-        river_col = f"river_type_{scale}km"
-        if river_grouping == "upstream_isolated_vs_mid_down":
-            work = df[df[river_col].isin([0, 1, 2, 3])].copy()
-            work["is_upstream"] = work[river_col].isin([0, 1]).astype(int)
-        elif river_grouping == "upstream_vs_mid_down":
-            work = df[df[river_col].isin([1, 2, 3])].copy()
-            work["is_upstream"] = work[river_col].eq(1).astype(int)
+        col = f"river_type_{scale}km"
+        work = df.loc[df[col].isin([0, 1, 2, 3])].copy()
+        if grouping == "upstream_vs_mid_down":
+            work = work.loc[work[col].isin([1, 2, 3])].copy()
+            work["is_upstream"] = work[col].eq(1).astype(int)
+        elif grouping == "upstream_isolated_vs_mid_down":
+            work["is_upstream"] = work[col].isin([0, 1]).astype(int)
         else:
-            raise ValueError(f"Unknown river grouping: {river_grouping}")
-        if work["is_upstream"].nunique(dropna=True) < 2:
-            continue
-
-        if use_formula:
-            result, used = fit_clustered_ols_formula(
-                work,
-                outcome,
-                exposure,
-                include_water=include_water,
-                include_wealth=include_wealth,
-            )
-        else:
-            result, used = fit_clustered_ols(
-                work,
-                outcome,
-                exposure,
-                include_water=include_water,
-                include_wealth=include_wealth,
-            )
+            raise ValueError(f"Unknown grouping: {grouping}")
+        n_river = len(work)
+        # Weighted and unweighted sensitivity fits use the same eligible sample.
+        work = work.loc[np.isfinite(work.sample_weight) & work.sample_weight.gt(0)].copy()
+        formula = _formula(outcome, exposure, include_water, include_wealth)
+        # Discover complete cases, then rebuild the formula design on those rows.
+        # Otherwise unused categorical levels inflate the cluster correction.
+        probe = smf.ols(formula, data=work, missing="drop")
+        used = work.loc[probe.data.row_labels].copy()
+        if used[outcome].nunique() < 2 or used.is_upstream.nunique() < 2:
+            raise ValueError(f"{model_name}, {scale} km: insufficient outcome/group variation")
+        if used.grid_id_05.nunique() < 2:
+            raise ValueError(f"{model_name}, {scale} km: fewer than two clusters")
+        model = (smf.wls(formula, data=used, weights=used.sample_weight / 1_000_000,
+                         missing="raise") if weighted else
+                 smf.ols(formula, data=used, missing="raise"))
+        fit = model.fit(cov_type="cluster", cov_kwds={"groups": used.grid_id_05})
         interaction = f"{exposure}:is_upstream"
-        if interaction not in result.params:
-            interaction = f"is_upstream:{exposure}"
-        add_result_rows(
-            rows,
-            result,
-            {
-                "model": model_name,
-                "outcome": outcome,
-                "scale_km": scale,
-                "exposure": exposure,
-                "include_water_control": include_water,
-                "include_wealth_control": include_wealth,
-                "river_grouping": river_grouping,
-                "used_data": used,
-            },
-            exposure,
-            interaction,
-        )
-    return pd.DataFrame(rows)
+        names = list(fit.params.index)
+
+        def add(label, coef, se, p):
+            rows.append(dict(model=model_name, outcome=outcome, scale_km=scale,
+                             exposure=exposure, weighted=weighted,
+                             include_water=include_water, include_wealth=include_wealth,
+                             term=label, coef=float(coef), std_error=float(se),
+                             p_value=float(p), stars=stars(float(p)), n_obs=int(fit.nobs),
+                             n_upstream=int(used.is_upstream.sum()),
+                             n_downstream=int(used.is_upstream.eq(0).sum())))
+
+        add("downstream_effect", fit.params[exposure], fit.bse[exposure], fit.pvalues[exposure])
+        add("upstream_interaction", fit.params[interaction], fit.bse[interaction], fit.pvalues[interaction])
+        contrast = np.zeros(len(names))
+        contrast[names.index(exposure)] = contrast[names.index(interaction)] = 1
+        test = fit.t_test(contrast)
+        add("net_upstream_effect", fit.params[exposure] + fit.params[interaction],
+            test.sd.item(), test.pvalue.item())
+        audits.append(dict(model=model_name, scale_km=scale, weighted=weighted,
+                           n_candidate=len(df), n_river=n_river, n_obs=len(used),
+                           n_deceased=int(used.is_dead.sum()), n_surviving=int(used.is_dead.eq(0).sum()),
+                           n_2018=int(used.interview_year.eq(2018).sum()),
+                           n_2021=int(used.interview_year.eq(2021).sum()),
+                           n_grid_cells=used.grid_id_05.nunique(),
+                           n_design_columns=len(names), design_rank=int(np.linalg.matrix_rank(model.exog)),
+                           formula=formula))
+    result = pd.DataFrame(rows, columns=RESULT_COLUMNS)
+    result.attrs["sample_audit"] = audits
+    return result
 
 
-def print_compact_table(results: pd.DataFrame) -> None:
-    if results.empty:
-        print("No model results were produced.")
-        return
-    for (model, exposure), part in results.groupby(["model", "exposure"], sort=False):
-        print(f"\n{model} | exposure={exposure}")
-        print("scale_km term                   coef      se        p       n_obs  n_up  n_down")
-        for _, row in part.iterrows():
-            print(
-                f"{int(row['scale_km']):>8} {row['term']:<22} "
-                f"{row['coef']:>8.4f}{row['stars']:<3} {row['std_error']:>8.4f} "
-                f"{row['p_value']:>7.3f} {int(row['n_obs']):>7} "
-                f"{int(row['n_upstream_control']):>5} {int(row['n_downstream_exposed']):>7}"
-            )
+def analysis(name, path=None):
+    """Single source of configuration for the five entry scripts and runner."""
+    if name in ("strict_diarrhea", "expanded_diarrhea"):
+        df = load_living(path, diarrhea=True)
+        parts = []
+        for weighted in (True, False):
+            for radius in (10, 15):
+                label = f"{name}_{radius}km_olc" + ("" if weighted else "_unweighted")
+                parts.append(run_river_interaction(
+                    df, "diarrhea_binary", f"log_olc_area_km2_{radius}km", RIVER_SCALES_KM,
+                    include_water=name == "strict_diarrhea", include_wealth=True,
+                    weighted=weighted, model_name=label))
+    else:
+        if name == "infant_mortality":
+            df, outcome, water, wealth = load_infant_mortality(path), "is_dead", False, False
+        elif name == "hemoglobin_survivors":
+            df, outcome, water, wealth = load_living(path), "hb_level", True, True
+        elif name == "hemoglobin_with_deceased":
+            df, outcome, water, wealth = load_combined(path), "hb_level", True, True
+        else:
+            raise ValueError(name)
+        parts = [run_river_interaction(
+            df, outcome, "log_olc_mean_area_km2_15km", RIPARIAN_SCALES_KM,
+            include_water=water, include_wealth=wealth, weighted=True,
+            grouping="upstream_vs_mid_down", model_name=name)]
+    audits = [row for part in parts for row in part.attrs["sample_audit"]]
+    # Clear attrs before concatenation because pandas compares attrs objects.
+    for part in parts:
+        part.attrs.clear()
+    result = pd.concat(parts, ignore_index=True)
+    result.attrs["sample_audit"] = audits
+    return result
+
+
+FILES = {
+    "strict_diarrhea": "health_strict_diarrhea_results.csv",
+    "expanded_diarrhea": "health_expanded_diarrhea_results.csv",
+    "infant_mortality": "health_infant_mortality_results.csv",
+    "hemoglobin_survivors": "health_hemoglobin_survivors_results.csv",
+    "hemoglobin_with_deceased": "health_hemoglobin_with_deceased_results.csv",
+}
+
+
+def arguments(description):
+    parser = argparse.ArgumentParser(description=description)
+    parser.add_argument("--data", type=Path, default=DATA / "all_living_and_deceased_model_ready.csv")
+    parser.add_argument("--output-dir", type=Path, default=OUT)
+    return parser.parse_args()
+
+
+def save_and_print(result, name, output_dir=OUT):
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    result.to_csv(output_dir / name, index=False)
+    audits = result.attrs.get("sample_audit", [])
+    if audits:
+        pd.DataFrame(audits).to_csv(output_dir / name.replace(".csv", "_sample_audit.csv"), index=False)
+    print(result.to_string(index=False))
+    print(f"Saved: {output_dir / name}")
+
+
+def run_one(name):
+    args = arguments(f"Run {name} from the combined model-ready CSV")
+    save_and_print(analysis(name, args.data), FILES[name], args.output_dir)
