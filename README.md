@@ -108,7 +108,7 @@ The scripts in `Health_script/` perform regression analysis **after DHS records 
 
 ### Input and environment
 
-Place `all_living_and_deceased_model_ready.csv` in `data/health/`. The updated file has 7,162 records and 82 columns. Its variable definitions and sample rules are documented in `data/health/HEALTH_DATA_DICTIONARY.md`.
+Place `all_living_and_deceased_model_ready.csv` in `data/health/`. Its variable definitions and sample rules are documented in `data/health/HEALTH_DATA_DICTIONARY.md`.
 
 The health models require Python 3.11 or later and NumPy, pandas, SciPy, statsmodels, and scikit-learn. PyTorch, Mamba, CUDA, and satellite images are not required to run this stage. Tested dependency versions are pinned in `Health_script/requirements.txt`.
 
@@ -125,7 +125,7 @@ To use another location for the complete CSV or results:
 python Health_script/run_health_models.py --data /path/to/all_living_and_deceased_model_ready.csv --output-dir /path/to/results
 ```
 
-The default paths are resolved from the scripts, so execution does not depend on the working directory. Each analysis can also be run separately with the same `--data` and `--output-dir` options:
+Each analysis can also be run separately with the same `--data` and `--output-dir` options:
 
 ```bash
 python Health_script/01_strict_diarrhea.py
